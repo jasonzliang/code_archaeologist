@@ -125,6 +125,8 @@ class CodeAnalyzer:
     def __init__(self, repo_path: str):
         self.repo_path = repo_path
         self.file_complexity_cache = {}
+        self.commits_data = None
+        self.collaboration_graph = None
 
     def analyze_repository(self):
         """Analyze repository commits and build collaboration data
@@ -132,6 +134,10 @@ class CodeAnalyzer:
         Returns:
             Tuple[List[Dict], nx.Graph]: Tuple containing commits data and collaboration graph
         """
+        if self.commits_data is not None:
+            assert self.collaboration_graph is not None
+            return self.commits_data, self.collaboration_graph
+
         commits_data = []
         collaboration_graph = nx.Graph()
         file_author_history = defaultdict(list)
@@ -229,6 +235,8 @@ class CodeAnalyzer:
                 traceback.print_exc()
                 continue
 
+        self.commits_data = commits_data
+        self.collaboration_graph = collaboration_graph
         return commits_data, collaboration_graph
         
     def calculate_file_complexity(self, file_content: str) -> float:
@@ -412,10 +420,10 @@ def main():
     
     repo_path = st.text_input("Enter repository path (local or remote)")
     
+    global COMMITS_DATA, COLLAB_GRAPH
     if repo_path:
         try:
             with st.spinner("Analyzing repository..."):
-                global COMMITS_DATA, COLLAB_GRAPH
                 analyzer = CodeAnalyzer(repo_path)
                 if COMMITS_DATA is None or COLLAB_GRAPH is None:
                     commits_data, collaboration_graph = analyzer.analyze_repository()
@@ -780,7 +788,7 @@ def main():
                 with tabs[3]:
                     st.subheader("Ask Questions About Your Repository")
                     st.write("""Example questions:
-- Show me the complexity trend for critical files
+- Show me the complexity trend for critical files.
 - What's the knowledge distribution across the team?
 - Analyze the correlation between technical debt and breaking changes.
 - Which files have the most frequent security-related commits?
