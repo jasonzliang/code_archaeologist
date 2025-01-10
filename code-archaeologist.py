@@ -23,6 +23,8 @@ import traceback
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MODEL = "gpt-4o"
+COMMITS_DATA = None
+COLLAB_GRAPH = None
 
 SYSTEM_PROMPT = """You are an expert software architect and data analyst specialized in repository analysis.
 Analyze git commits considering:
@@ -44,6 +46,7 @@ File Types Changed: {file_types}
 Complex Files: {complex_files}
 
 Provide a JSON response with the following structure:
+```json
 {{
     "impact_level": 1-5 (1 minimal, 5 major),
     "category": "architectural|bugfix|feature|refactor|security|documentation|technical_debt|performance|test|ci_cd",
@@ -55,7 +58,8 @@ Provide a JSON response with the following structure:
     "complexity_change": -2 to 2,
     "tags": ["list", "of", "relevant", "tags"],
     "suggested_reviewers": ["based", "on", "file", "history"]
-}}"""
+}}
+```"""
 
 QA_SYSTEM_PROMPT = """You are an advanced repository analysis AI with expertise in software development patterns and metrics.
 Generate insights and visualizations based on the available data and questions.
@@ -82,7 +86,8 @@ When responding, provide:
 3. Visual suggestions
 4. Actionable insights
 
-Response format:
+Provide a JSON response with the following structure:
+```json
 {
     "answer": "Detailed analysis with insights",
     "metrics": {
@@ -107,7 +112,8 @@ Response format:
         "actionable insight 1",
         "actionable insight 2"
     ]
-}"""
+}
+```"""
 
 def parse_json(rsp):
     pattern = r"```json(.*)```"
@@ -263,6 +269,9 @@ class CodeAnalyzer:
             'file_type': modified_file.filename.split('.')[-1] if '.' in modified_file.filename else 'unknown'
         }
 
+def generate_visualization(viz_spec: Dict[str, Any], df: pd.DataFrame) -> go.Figure:
+    pass
+
 def generate_advanced_visualization(viz_spec: Dict[str, Any], df: pd.DataFrame) -> go.Figure:
     """Generate advanced Plotly visualizations based on specification"""
     if viz_spec["type"] == "heatmap":
@@ -337,7 +346,7 @@ def generate_advanced_visualization(viz_spec: Dict[str, Any], df: pd.DataFrame) 
         
     else:
         # Fall back to basic visualizations
-        return super().generate_visualization(viz_spec, df)
+        return generate_visualization(viz_spec, df)
     
     # Apply layout settings
     if "layout" in viz_spec:
@@ -388,7 +397,7 @@ def process_question(question: str, df: pd.DataFrame, collaboration_graph: nx.Gr
     )
     
     try:
-        result = json.loads(response.choices[0].message.content)
+        result = json.loads(parse_json(response.choices[0].message.content))
         # fig = generate_advanced_visualization(result["visualization"], df)
         fig = None
         return result["answer"], result["metrics"], fig
@@ -406,8 +415,13 @@ def main():
     if repo_path:
         try:
             with st.spinner("Analyzing repository..."):
+                global COMMITS_DATA, COLLAB_GRAPH
                 analyzer = CodeAnalyzer(repo_path)
-                commits_data, collaboration_graph = analyzer.analyze_repository()
+                if COMMITS_DATA is None or COLLAB_GRAPH is None:
+                    commits_data, collaboration_graph = analyzer.analyze_repository()
+                    COMMITS_DATA = commits_data; COLLAB_GRAPH = collaboration_graph
+                else:
+                    commits_data = COMMITS_DATA; collaboration_graph = COLLAB_GRAPH
 
                 # Check if we got any data
                 if not commits_data:
