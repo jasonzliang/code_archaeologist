@@ -136,47 +136,48 @@ class CodeAnalyzer:
             if len(commit.parents) > 1:
                 continue
 
-            # Extract author information
-            author = commit.author.name if commit.author.name else commit.author.email
+            try:
+                # Extract author information
+                author = commit.author.name if commit.author.name else commit.author.email
 
-            # Analyze modified files
-            modified_files = []
-            complex_files = []
-            file_types = []
-            lines_added = 0
-            lines_removed = 0
+                # Analyze modified files
+                modified_files = []
+                complex_files = []
+                file_types = []
+                lines_added = 0
+                lines_removed = 0
 
-            for modified_file in commit.modified_files:
-                if not modified_file.filename or modified_file.source_code is None:
+                for modified_file in commit.modified_files:
+                    if not modified_file.filename or modified_file.source_code is None:
+                        continue
+
+                    file_analysis = self.analyze_file_changes(modified_file)
+                    modified_files.append(file_analysis['filename'])
+                    lines_added += file_analysis['lines_added']
+                    lines_removed += file_analysis['lines_removed']
+                    file_types.append(file_analysis['file_type'])
+
+                    if file_analysis['complexity_change'] > 1.0:
+                        complex_files.append(file_analysis['filename'])
+
+                    # Update file author history with consistent author identifier
+                    file_author_history[modified_file.filename].append(author)
+
+                # Skip commits with no valid file changes
+                if not modified_files:
                     continue
 
-                file_analysis = self.analyze_file_changes(modified_file)
-                modified_files.append(file_analysis['filename'])
-                lines_added += file_analysis['lines_added']
-                lines_removed += file_analysis['lines_removed']
-                file_types.append(file_analysis['file_type'])
+                # Prepare commit analysis prompt
+                commit_context = {
+                    "message": commit.msg,
+                    "files": modified_files,
+                    "lines_added": lines_added,
+                    "lines_removed": lines_removed,
+                    "file_types": list(set(file_types)),
+                    "complex_files": complex_files
+                }
 
-                if file_analysis['complexity_change'] > 1.0:
-                    complex_files.append(file_analysis['filename'])
 
-                # Update file author history with consistent author identifier
-                file_author_history[modified_file.filename].append(author)
-
-            # Skip commits with no valid file changes
-            if not modified_files:
-                continue
-
-            # Prepare commit analysis prompt
-            commit_context = {
-                "message": commit.msg,
-                "files": modified_files,
-                "lines_added": lines_added,
-                "lines_removed": lines_removed,
-                "file_types": list(set(file_types)),
-                "complex_files": complex_files
-            }
-
-            try:
                 content = COMMIT_ANALYSIS_PROMPT.format(**commit_context)
 
                 # Get AI analysis of commit
@@ -398,7 +399,7 @@ def process_question(question: str, df: pd.DataFrame, collaboration_graph: nx.Gr
 
 def main():
     st.title("🏺 Advanced Code Archaeologist")
-    st.write("Deep dive into your repository's evolution with %s powered analytics" % MODEL)
+    st.write("Deep dive into your repository's evolution with LLM (%s) powered analytics" % MODEL)
     
     repo_path = st.text_input("Enter repository path (local or remote)")
     
