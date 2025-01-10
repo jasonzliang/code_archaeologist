@@ -22,6 +22,8 @@ import traceback
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+MODEL = "gpt-4o"
+
 SYSTEM_PROMPT = """You are an expert software architect and data analyst specialized in repository analysis.
 Analyze git commits considering:
 1. Architectural patterns and decisions
@@ -179,7 +181,7 @@ class CodeAnalyzer:
 
                 # Get AI analysis of commit
                 response = client.chat.completions.create(
-                    model="gpt-4o",
+                    model=MODEL,
                     messages=[
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": content}
@@ -349,25 +351,31 @@ def generate_advanced_visualization(viz_spec: Dict[str, Any], df: pd.DataFrame) 
 def process_question(question: str, df: pd.DataFrame, collaboration_graph: nx.Graph) -> Tuple[str, Dict[str, Any], go.Figure]:
     """Enhanced question processing with advanced analytics"""
     # Prepare rich context about the repository
+    try:
+        avg_degree = sum(dict(collaboration_graph.degree()).values()) / len(collaboration_graph)
+    except:
+        avg_degree = 0
+
     context = {
         "basic_stats": {
             "total_commits": len(df),
             "date_range": f"{df['date'].min()} to {df['date'].max()}",
             "unique_authors": len(df['author'].unique()),
-            "total_files_changed": df['files_changed'].sum()
+            "total_files_changed": len(df['files_changed'])
         },
         "technical_metrics": {
-            "avg_impact_level": df['impact_level'].mean(),
+            "avg_impact_level": float(df['impact_level'].mean()),
             "total_breaking_changes": len(df[df['breaking_change']]),
-            "net_technical_debt": df['technical_debt_impact'].sum()
+            "net_technical_debt": float(df['technical_debt_impact'].sum())
         },
         "available_columns": list(df.columns),
         "collaboration_metrics": {
-            "network_density": nx.density(collaboration_graph),
-            "avg_degree": sum(dict(collaboration_graph.degree()).values()) / len(collaboration_graph)
+            "network_density": float(nx.density(collaboration_graph)),
+            "avg_degree": avg_degree
         }
     }
-    
+    print(context)
+
     response = client.chat.completions.create(
         model="gpt-4-turbo-preview",
         messages=[
@@ -379,15 +387,17 @@ def process_question(question: str, df: pd.DataFrame, collaboration_graph: nx.Gr
     
     try:
         result = json.loads(response.choices[0].message.content)
-        fig = generate_advanced_visualization(result["visualization"], df)
+        # fig = generate_advanced_visualization(result["visualization"], df)
+        fig = None
         return result["answer"], result["metrics"], fig
     except Exception as e:
         st.error(f"Error processing question: {str(e)}")
+        traceback.print_exc()
         return "I couldn't process that question properly. Please try rephrasing it.", {}, None
 
 def main():
     st.title("🏺 Advanced Code Archaeologist")
-    st.write("Deep dive into your repository's evolution with AI-powered analytics")
+    st.write("Deep dive into your repository's evolution with %s powered analytics" % MODEL)
     
     repo_path = st.text_input("Enter repository path (local or remote)")
     
@@ -738,12 +748,12 @@ def main():
 
                 with tabs[3]:
                     st.subheader("Ask Questions About Your Repository")
-                    st.write("""Example questions:
-                    - Show me the complexity trend for critical files
-                    - What's the knowledge distribution across the team?
-                    - Analyze the correlation between technical debt and breaking changes
-                    - Which files have the most frequent security-related commits?
-                    - Generate a development velocity report for Q1
+                    st.write("""Example questions:\n
+                    - Show me the complexity trend for critical files\n
+                    - What's the knowledge distribution across the team?\n
+                    - Analyze the correlation between technical debt and breaking changes.\n
+                    - Which files have the most frequent security-related commits?\n
+                    - Generate a development velocity report for Q1\n
                     """)
 
                     question = st.text_input("Enter your question:")
@@ -764,6 +774,7 @@ def main():
                                     st.plotly_chart(fig, use_container_width=True)
                             except Exception as e:
                                 st.error(f"Error processing question: {str(e)}")
+                                traceback.print_exc()
 
                 with tabs[4]:
                     st.subheader("Custom Analysis")
