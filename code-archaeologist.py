@@ -203,7 +203,7 @@ class CodeAnalyzer:
                     "complex_files": complex_files,
                     **analysis  # Include AI analysis results
                 }
-                print(commit_data)
+                print("Commit data:"); print(commit_data)
                 commits_data.append(commit_data)
 
                 # Update collaboration graph with consistent author identifiers
@@ -351,12 +351,13 @@ def generate_advanced_visualization(viz_spec: Dict[str, Any], df: pd.DataFrame) 
 def process_question(question: str, df: pd.DataFrame, collaboration_graph: nx.Graph) -> Tuple[str, Dict[str, Any], go.Figure]:
     """Enhanced question processing with advanced analytics"""
     # Prepare rich context about the repository
-    try:
+    if len(collaboration_graph) > 0:
         avg_degree = sum(dict(collaboration_graph.degree()).values()) / len(collaboration_graph)
-    except:
+    else:
         avg_degree = 0
 
-    context = {
+    commit_data = df.to_json(orient='records')
+    stats = {
         "basic_stats": {
             "total_commits": len(df),
             "date_range": f"{df['date'].min()} to {df['date'].max()}",
@@ -374,13 +375,13 @@ def process_question(question: str, df: pd.DataFrame, collaboration_graph: nx.Gr
             "avg_degree": avg_degree
         }
     }
-    print(context)
+    print("Statistics:"); print(stats)
 
     response = client.chat.completions.create(
         model="gpt-4-turbo-preview",
         messages=[
             {"role": "system", "content": QA_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Context:\n{json.dumps(context, indent=2)}\n\nQuestion: {question}"}
+            {"role": "user", "content": f"Commit Data:\n{json.dumps(commit_data, indent=4)}\n\nCommit Statistics:\n{json.dumps(stats, indent=4)}\n\nQuestion: {question}"}
         ],
         temperature=0.3
     )
@@ -460,6 +461,10 @@ def main():
                     try:
                         st.subheader("Commit Activity Pattern")
                         activity_df = df.copy()
+                        # Ensure date is in datetime format
+                        if not pd.api.types.is_datetime64_any_dtype(activity_df['date']):
+                            activity_df['date'] = pd.to_datetime(activity_df['date'], utc=True)
+
                         activity_df['hour'] = activity_df['date'].dt.hour
                         activity_df['day'] = activity_df['date'].dt.day_name()
 
@@ -471,7 +476,6 @@ def main():
                             aggfunc='count',
                             fill_value=0
                         )
-
                         # Reorder days
                         day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
                         activity_pivot = activity_pivot.reindex(day_order)
@@ -491,16 +495,24 @@ def main():
                         st.plotly_chart(fig_heatmap, use_container_width=True)
                     except Exception as e:
                         st.error(f"Could not generate commit activity heatmap: {str(e)}")
+                        traceback.print_exc()
 
                     # Commit trends over time
                     try:
                         st.subheader("Development Velocity")
+                        # Ensure date is in datetime format
+                        if not pd.api.types.is_datetime64_any_dtype(df['date']):
+                            df['date'] = pd.to_datetime(df['date'], utc=True)
+
+                        # Calculate week and year directly from datetime
                         df['week'] = df['date'].dt.isocalendar().week
                         df['year'] = df['date'].dt.year
                         weekly_commits = df.groupby(['year', 'week']).size().reset_index(name='commits')
-                        weekly_commits['date'] = pd.to_datetime(
-                            weekly_commits['year'].astype(str) + '-W' +
-                            weekly_commits['week'].astype(str) + '-1'
+
+                        # Create proper datetime for x-axis
+                        weekly_commits['date'] = weekly_commits.apply(
+                            lambda x: pd.to_datetime(f"{x['year']}-{x['week']:02d}-1", format="%Y-%W-%w"),
+                            axis=1
                         )
 
                         fig_trend = go.Figure()
@@ -525,6 +537,7 @@ def main():
                         st.plotly_chart(fig_trend, use_container_width=True)
                     except Exception as e:
                         st.error(f"Could not generate development velocity chart: {str(e)}")
+                        traceback.print_exc()
 
                 with tabs[1]:
                     st.subheader("Code Quality Insights")
@@ -608,6 +621,7 @@ def main():
                             st.warning("File impact analysis requires files_changed and impact_level data")
                     except Exception as e:
                         st.error(f"Error in Code Quality Insights tab: {str(e)}")
+                        traceback.print_exc()
 
                 with tabs[2]:
                     st.subheader("Team Collaboration Patterns")
@@ -720,6 +734,7 @@ def main():
                             st.plotly_chart(fig_network, use_container_width=True)
                         else:
                             st.warning("No collaboration data available to generate network visualization")
+                            traceback.print_exc()
 
                         # Knowledge Distribution
                         st.subheader("Knowledge Distribution")
@@ -745,16 +760,16 @@ def main():
                             st.warning("File ownership analysis requires files_changed data")
                     except Exception as e:
                         st.error(f"Error in Team Collaboration tab: {str(e)}")
+                        traceback.print_exc()
 
                 with tabs[3]:
                     st.subheader("Ask Questions About Your Repository")
-                    st.write("""Example questions:\n
-                    - Show me the complexity trend for critical files\n
-                    - What's the knowledge distribution across the team?\n
-                    - Analyze the correlation between technical debt and breaking changes.\n
-                    - Which files have the most frequent security-related commits?\n
-                    - Generate a development velocity report for Q1\n
-                    """)
+                    st.write("""Example questions:
+- Show me the complexity trend for critical files
+- What's the knowledge distribution across the team?
+- Analyze the correlation between technical debt and breaking changes.
+- Which files have the most frequent security-related commits?
+- Generate a development velocity report for Q1""")
 
                     question = st.text_input("Enter your question:")
                     if question:
@@ -885,11 +900,25 @@ def main():
                             # Apply filters
                             filtered_df = df.copy()
 
-                            if 'date' in df.columns and date_range is not None:
-                                filtered_df = filtered_df[
-                                    (filtered_df['date'].dt.date >= date_range[0]) &
-                                    (filtered_df['date'].dt.date <= date_range[1])
-                                ]
+                            if 'date' in df.columns:
+                                # Ensure date column is datetime type
+                                try:
+                                    if not pd.api.types.is_datetime64_any_dtype(filtered_df['date']):
+                                        filtered_df['date'] = pd.to_datetime(filtered_df['date'], utc=True)
+
+                                    if date_range is not None:
+                                        # Convert date range to UTC timezone-aware datetime
+                                        date_start = pd.to_datetime(date_range[0]).tz_localize('UTC')
+                                        date_end = pd.to_datetime(date_range[1]).tz_localize('UTC')
+
+                                        filtered_df = filtered_df[
+                                            (filtered_df['date'] >= date_start) &
+                                            (filtered_df['date'] <= date_end)
+                                        ]
+                                except Exception as e:
+                                    st.error(f"Error processing date filter: {str(e)}")
+                                    st.write("Please ensure the date column contains valid datetime values.")
+                                    traceback.print_exc()
 
                             if selected_authors:
                                 filtered_df = filtered_df[filtered_df['author'].isin(selected_authors)]
@@ -1016,12 +1045,15 @@ def main():
                             except Exception as e:
                                 st.error(f"Error creating visualization: {str(e)}")
                                 st.write("Please try different parameters or data columns.")
+                                traceback.print_exc()
                     except Exception as e:
                         st.error(f"Error in Custom Analysis tab: {str(e)}")
+                        traceback.print_exc()
 
         except Exception as e:
             st.error(f"An error occurred while analyzing the repository: {str(e)}")
             st.write("Please check the repository path and ensure you have the necessary permissions.")
+            traceback.print_exc()
 
 
 if __name__ == "__main__":
