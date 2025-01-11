@@ -140,7 +140,7 @@ class CodeAnalyzer:
 
             # Remove merge commits (more than 1 parent)
             all_commits = list(repo.traverse_commits())
-            all_commits = [commit for commit in all_commits if len(commit.parents) == 1]
+            all_commits = [commit for commit in all_commits if len(commit.parents) <= 1]
             # If commit limit is set, get only the most recent commits
             if self.commit_limit > 0:
                 # Convert generator to list and slice
@@ -553,20 +553,21 @@ def main():
     st.write("Deep dive into your repository's evolution with LLM (%s) powered analytics" % MODEL)
     
     # Create a row with two columns for inputs
-    col1, col2 = st.columns(2)
+    repo_path = st.text_input("Enter repository path (local or remote)")
 
+    col1, col2 = st.columns((3, 1))
     with col1:
-        repo_path = st.text_input("Enter repository path (local or remote)")
-
-    with col2:
         commit_limit = st.number_input(
             "Number of most recent commits to analyze (0 for all)",
             min_value=0,
             value=0,
-            help="Limit analysis to K most recent commits. Enter 0 to analyze all commits."
-        )
-    
-    # global COMMITS_DATA, COLLAB_GRAPH
+            help="Limit analysis to K most recent commits. Enter 0 to analyze all commits.")
+    with col2:
+        if st.button("🔄 Clear Analysis Cache", help="Clear cached repository analysis results"):
+            get_commit_info.clear()
+            st.success("Cache cleared successfully!")
+            st.rerun()
+
     if repo_path:
         try:
             with st.spinner("Analyzing repository..."):
