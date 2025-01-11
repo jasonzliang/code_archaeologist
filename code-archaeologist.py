@@ -23,8 +23,6 @@ import traceback
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MODEL = "gpt-4o"
-COMMITS_DATA = None
-COLLAB_GRAPH = None
 
 SYSTEM_PROMPT = """You are an expert software architect and data analyst specialized in repository analysis.
 Analyze git commits considering:
@@ -65,7 +63,7 @@ QA_SYSTEM_PROMPT = """You are an advanced repository analysis AI with expertise 
 Generate insights and visualizations based on the available data and questions.
 
 Available visualization types:
-1. timeline - Time-based trends
+1. line - Time-based trends
 2. bar - Comparisons and rankings
 3. pie - Distributions
 4. scatter - Correlations and patterns
@@ -83,7 +81,7 @@ Available visualization types:
 When responding, provide:
 1. A detailed analysis
 2. Relevant metrics
-3. Visual suggestions
+3. Visual suggestions (visualization_type from available ones above)
 4. Actionable insights
 
 Provide a JSON response with the following structure:
@@ -105,7 +103,6 @@ Provide a JSON response with the following structure:
         "layout": {
             "title": "Visualization title",
             "type": "linear|log|date|etc",
-            "color_scheme": "color scheme name"
         }
     },
     "recommendations": [
@@ -122,11 +119,10 @@ def parse_json(rsp):
     return code_text
 
 class CodeAnalyzer:
-    def __init__(self, repo_path: str):
+    def __init__(self, repo_path: str, commit_limit: int = 0):
         self.repo_path = repo_path
+        self.commit_limit = commit_limit
         self.file_complexity_cache = {}
-        self.commits_data = None
-        self.collaboration_graph = None
 
     def analyze_repository(self):
         """Analyze repository commits and build collaboration data
@@ -134,110 +130,118 @@ class CodeAnalyzer:
         Returns:
             Tuple[List[Dict], nx.Graph]: Tuple containing commits data and collaboration graph
         """
-        if self.commits_data is not None:
-            assert self.collaboration_graph is not None
-            return self.commits_data, self.collaboration_graph
-
         commits_data = []
         collaboration_graph = nx.Graph()
         file_author_history = defaultdict(list)
 
-        # Analyze each commit in the repository
-        for commit in Repository(self.repo_path).traverse_commits():
-            # Skip merge commits
-            if len(commit.parents) > 1:
-                continue
+        try:
+            # Get repository object
+            repo = Repository(self.repo_path)
 
-            try:
-                # Extract author information
-                author = commit.author.name if commit.author.name else commit.author.email
+            # Remove merge commits (more than 1 parent)
+            all_commits = list(repo.traverse_commits())
+            all_commits = [commit for commit in all_commits if len(commit.parents) == 1]
+            # If commit limit is set, get only the most recent commits
+            if self.commit_limit > 0:
+                # Convert generator to list and slice
+                commits_to_analyze = all_commits[-self.commit_limit:] if len(all_commits) > self.commit_limit else all_commits
+            else:
+                commits_to_analyze = all_commits
 
-                # Analyze modified files
-                modified_files = []
-                complex_files = []
-                file_types = []
-                lines_added = 0
-                lines_removed = 0
+            # Analyze each commit in the repository
+            for commit in commits_to_analyze:
+                try:
+                    # Extract author information
+                    author = commit.author.name if commit.author.name else commit.author.email
 
-                for modified_file in commit.modified_files:
-                    if not modified_file.filename or modified_file.source_code is None:
+                    # Analyze modified files
+                    modified_files = []
+                    complex_files = []
+                    file_types = []
+                    lines_added = 0
+                    lines_removed = 0
+
+                    for modified_file in commit.modified_files:
+                        if not modified_file.filename or modified_file.source_code is None:
+                            continue
+
+                        file_analysis = self.analyze_file_changes(modified_file)
+                        modified_files.append(file_analysis['filename'])
+                        lines_added += file_analysis['lines_added']
+                        lines_removed += file_analysis['lines_removed']
+                        file_types.append(file_analysis['file_type'])
+
+                        if file_analysis['complexity_change'] > 1.0:
+                            complex_files.append(file_analysis['filename'])
+
+                        # Update file author history
+                        file_author_history[modified_file.filename].append(author)
+
+                    # Skip commits with no valid file changes
+                    if not modified_files:
                         continue
 
-                    file_analysis = self.analyze_file_changes(modified_file)
-                    modified_files.append(file_analysis['filename'])
-                    lines_added += file_analysis['lines_added']
-                    lines_removed += file_analysis['lines_removed']
-                    file_types.append(file_analysis['file_type'])
+                    # Prepare commit analysis prompt
+                    commit_context = {
+                        "message": commit.msg,
+                        "files": modified_files,
+                        "lines_added": lines_added,
+                        "lines_removed": lines_removed,
+                        "file_types": list(set(file_types)),
+                        "complex_files": complex_files
+                    }
 
-                    if file_analysis['complexity_change'] > 1.0:
-                        complex_files.append(file_analysis['filename'])
+                    content = COMMIT_ANALYSIS_PROMPT.format(**commit_context)
 
-                    # Update file author history with consistent author identifier
-                    file_author_history[modified_file.filename].append(author)
+                    # Get AI analysis of commit
+                    response = client.chat.completions.create(
+                        model=MODEL,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": content}
+                        ],
+                        temperature=0.3
+                    )
+                    json_str = parse_json(response.choices[0].message.content)
+                    analysis = json.loads(json_str)
 
-                # Skip commits with no valid file changes
-                if not modified_files:
+                    # Build commit data
+                    commit_data = {
+                        "hash": commit.hash,
+                        "author": author,
+                        "date": commit.author_date,
+                        "message": commit.msg,
+                        "files_changed": modified_files,
+                        "lines_added": lines_added,
+                        "lines_removed": lines_removed,
+                        "file_types": list(set(file_types)),
+                        "complex_files": complex_files,
+                        **analysis
+                    }
+                    commits_data.append(commit_data)
+
+                    # Update collaboration graph
+                    for filename in modified_files:
+                        recent_authors = list(set(file_author_history[filename][-5:]))
+                        for author1 in recent_authors:
+                            for author2 in recent_authors:
+                                if author1 < author2:
+                                    if not collaboration_graph.has_edge(author1, author2):
+                                        collaboration_graph.add_edge(author1, author2, weight=1)
+                                    else:
+                                        collaboration_graph[author1][author2]['weight'] += 1
+
+                except Exception as e:
+                    print(f"Error analyzing commit {commit.hash}: {str(e)}")
+                    traceback.print_exc()
                     continue
 
-                # Prepare commit analysis prompt
-                commit_context = {
-                    "message": commit.msg,
-                    "files": modified_files,
-                    "lines_added": lines_added,
-                    "lines_removed": lines_removed,
-                    "file_types": list(set(file_types)),
-                    "complex_files": complex_files
-                }
+        except Exception as e:
+            print(f"Error analyzing repository: {str(e)}")
+            traceback.print_exc()
 
-
-                content = COMMIT_ANALYSIS_PROMPT.format(**commit_context)
-
-                # Get AI analysis of commit
-                response = client.chat.completions.create(
-                    model=MODEL,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": content}
-                    ],
-                    temperature=0.3
-                )
-                json_str = parse_json(response.choices[0].message.content)
-                analysis = json.loads(json_str)
-                # Build commit data with consistent author field
-                commit_data = {
-                    "hash": commit.hash,
-                    "author": author,  # Using consistent author identifier
-                    "date": commit.author_date,
-                    "message": commit.msg,
-                    "files_changed": modified_files,
-                    "lines_added": lines_added,
-                    "lines_removed": lines_removed,
-                    "file_types": list(set(file_types)),
-                    "complex_files": complex_files,
-                    **analysis  # Include AI analysis results
-                }
-                print("Commit data:"); print(commit_data)
-                commits_data.append(commit_data)
-
-                # Update collaboration graph with consistent author identifiers
-                for filename in modified_files:
-                    recent_authors = list(set(file_author_history[filename][-5:]))  # Last 5 authors
-                    for author1 in recent_authors:
-                        for author2 in recent_authors:
-                            if author1 < author2:  # Avoid duplicate edges
-                                if not collaboration_graph.has_edge(author1, author2):
-                                    collaboration_graph.add_edge(author1, author2, weight=1)
-                                else:
-                                    collaboration_graph[author1][author2]['weight'] += 1
-
-            except Exception as e:
-                print(f"Error analyzing commit {commit.hash}: {str(e)}")
-                traceback.print_exc()
-                continue
-
-        self.commits_data = commits_data
-        self.collaboration_graph = collaboration_graph
         return commits_data, collaboration_graph
+
         
     def calculate_file_complexity(self, file_content: str) -> float:
         """Calculate code complexity using various metrics"""
@@ -278,7 +282,128 @@ class CodeAnalyzer:
         }
 
 def generate_visualization(viz_spec: Dict[str, Any], df: pd.DataFrame) -> go.Figure:
-    pass
+    """Generate basic Plotly visualizations based on specification
+
+    Args:
+        viz_spec (Dict[str, Any]): Visualization specification containing type, data, and layout
+        df (pd.DataFrame): DataFrame containing the data to visualize
+
+    Returns:
+        go.Figure: Plotly figure object
+    """
+    if viz_spec["type"] == "line":
+        fig = px.line(
+            df,
+            x=viz_spec["data"]["x"],
+            y=viz_spec["data"]["y"],
+            color=viz_spec["data"].get("color"),
+            title=viz_spec["layout"].get("title", "Timeline Analysis")
+        )
+
+    elif viz_spec["type"] == "bar":
+        fig = px.bar(
+            df,
+            x=viz_spec["data"]["x"],
+            y=viz_spec["data"]["y"],
+            color=viz_spec["data"].get("color"),
+            title=viz_spec["layout"].get("title", "Bar Chart Analysis")
+        )
+
+    elif viz_spec["type"] == "pie":
+        fig = px.pie(
+            df,
+            values=viz_spec["data"]["values"],
+            names=viz_spec["data"]["names"],
+            title=viz_spec["layout"].get("title", "Distribution Analysis")
+        )
+
+    elif viz_spec["type"] == "scatter":
+        fig = px.scatter(
+            df,
+            x=viz_spec["data"]["x"],
+            y=viz_spec["data"]["y"],
+            color=viz_spec["data"].get("color"),
+            size=viz_spec["data"].get("size"),
+            title=viz_spec["layout"].get("title", "Correlation Analysis")
+        )
+
+    elif viz_spec["type"] == "network":
+        # Create network layout
+        G = nx.Graph()
+        edges = zip(df[viz_spec["data"]["source"]], df[viz_spec["data"]["target"]])
+        G.add_edges_from(edges)
+        pos = nx.spring_layout(G)
+
+        # Create edge traces
+        edge_x = []
+        edge_y = []
+        for edge in G.edges():
+            x0, y0 = pos[edge[0]]
+            x1, y1 = pos[edge[1]]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+
+        edge_trace = go.Scatter(
+            x=edge_x, y=edge_y,
+            line=dict(width=0.5, color="#888"),
+            hoverinfo="none",
+            mode="lines"
+        )
+
+        # Create node traces
+        node_x = [pos[node][0] for node in G.nodes()]
+        node_y = [pos[node][1] for node in G.nodes()]
+
+        node_trace = go.Scatter(
+            x=node_x, y=node_y,
+            mode="markers+text",
+            hoverinfo="text",
+            text=list(G.nodes()),
+            marker=dict(size=10)
+        )
+
+        fig = go.Figure(data=[edge_trace, node_trace])
+        fig.update_layout(
+            title=viz_spec["layout"].get("title", "Network Analysis"),
+            showlegend=False,
+            hovermode="closest",
+            margin=dict(b=20, l=5, r=5, t=40),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
+        )
+
+    elif viz_spec["type"] == "treemap":
+        fig = px.treemap(
+            df,
+            path=viz_spec["data"]["path"],
+            values=viz_spec["data"].get("values"),
+            color=viz_spec["data"].get("color"),
+            title=viz_spec["layout"].get("title", "Hierarchical Analysis")
+        )
+
+    else:
+        raise ValueError(f"Unsupported visualization type: {viz_spec['type']}")
+
+    # Apply common layout settings
+    if "layout" in viz_spec:
+        fig.update_layout(
+            template=viz_spec["layout"].get("template", "plotly_white"),
+            showlegend=viz_spec["layout"].get("showlegend", True),
+            height=viz_spec["layout"].get("height", 600),
+            width=viz_spec["layout"].get("width", None)
+        )
+
+        # Apply axis type if specified
+        if viz_spec["layout"].get("type"):
+            axis_type = viz_spec["layout"]["type"]
+            fig.update_xaxes(type=axis_type)
+            fig.update_yaxes(type=axis_type)
+
+        # Apply color scheme if specified
+        # if viz_spec["layout"].get("color_scheme"):
+        #     fig.update_traces(marker_colorscale=viz_spec["layout"]["color_scheme"])
+
+    return fig
 
 def generate_advanced_visualization(viz_spec: Dict[str, Any], df: pd.DataFrame) -> go.Figure:
     """Generate advanced Plotly visualizations based on specification"""
@@ -393,45 +518,60 @@ def process_question(question: str, df: pd.DataFrame, collaboration_graph: nx.Gr
             "avg_degree": avg_degree
         }
     }
-    print("Statistics:"); print(stats)
+    print("Commit statistics:"); print(stats)
 
     response = client.chat.completions.create(
-        model="gpt-4-turbo-preview",
+        model=MODEL,
         messages=[
             {"role": "system", "content": QA_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Commit Data:\n{json.dumps(commit_data, indent=4)}\n\nCommit Statistics:\n{json.dumps(stats, indent=4)}\n\nQuestion: {question}"}
+            {"role": "user", "content": f"Commit data:\n{json.dumps(commit_data, indent=4)}\n\nCommit statistics:\n{json.dumps(stats, indent=4)}\n\nQuestion: {question}"}
         ],
         temperature=0.3
     )
     
     try:
         result = json.loads(parse_json(response.choices[0].message.content))
-        # fig = generate_advanced_visualization(result["visualization"], df)
-        fig = None
+        try:
+            fig = generate_advanced_visualization(result["visualization"], df)
+        except Exception as e:
+            traceback.print_exc()
+            fig = None
         return result["answer"], result["metrics"], fig
     except Exception as e:
         st.error(f"Error processing question: {str(e)}")
         traceback.print_exc()
         return "I couldn't process that question properly. Please try rephrasing it.", {}, None
 
+@st.cache_data
+def get_commit_info(repo_path, commit_limit):
+    analyzer = CodeAnalyzer(repo_path, commit_limit)
+    commits_data, collaboration_graph = analyzer.analyze_repository()
+    return commits_data, collaboration_graph
+
 def main():
     st.title("🏺 Advanced Code Archaeologist")
     st.write("Deep dive into your repository's evolution with LLM (%s) powered analytics" % MODEL)
     
-    repo_path = st.text_input("Enter repository path (local or remote)")
+    # Create a row with two columns for inputs
+    col1, col2 = st.columns(2)
+
+    with col1:
+        repo_path = st.text_input("Enter repository path (local or remote)")
+
+    with col2:
+        commit_limit = st.number_input(
+            "Number of most recent commits to analyze (0 for all)",
+            min_value=0,
+            value=0,
+            help="Limit analysis to K most recent commits. Enter 0 to analyze all commits."
+        )
     
-    global COMMITS_DATA, COLLAB_GRAPH
+    # global COMMITS_DATA, COLLAB_GRAPH
     if repo_path:
         try:
             with st.spinner("Analyzing repository..."):
-                analyzer = CodeAnalyzer(repo_path)
-                if COMMITS_DATA is None or COLLAB_GRAPH is None:
-                    commits_data, collaboration_graph = analyzer.analyze_repository()
-                    COMMITS_DATA = commits_data; COLLAB_GRAPH = collaboration_graph
-                else:
-                    commits_data = COMMITS_DATA; collaboration_graph = COLLAB_GRAPH
+                commits_data, collaboration_graph = get_commit_info(repo_path, commit_limit)
 
-                # Check if we got any data
                 if not commits_data:
                     st.error("No commit data was found in the repository. Please check the repository path and try again.")
                     return
@@ -804,7 +944,7 @@ def main():
                                 if metrics:
                                     cols = st.columns(len(metrics))
                                     for col, (metric_name, value) in zip(cols, metrics.items()):
-                                        col.metric(metric_name, value)
+                                        col.metric(metric_name, str(value))
 
                                 # Display the answer and visualization
                                 st.write(answer)
