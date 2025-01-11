@@ -552,7 +552,6 @@ def main():
     st.title("🏺 Advanced Code Archaeologist")
     st.write("Deep dive into your repository's evolution with LLM (%s) powered analytics" % MODEL)
     
-    # Create a row with two columns for inputs
     repo_path = st.text_input("Enter repository path (local or remote)")
 
     col1, col2 = st.columns((3, 1))
