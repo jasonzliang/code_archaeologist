@@ -1,4 +1,4 @@
-# Code Archaeologist 🏺
+# 🏺 Code Archaeologist 🏺
 
 Code Archaeologist is an advanced Git repository analysis tool that combines the power of AI (GPT-4) with data visualization to provide deep insights into your codebase's evolution, team dynamics, and development patterns.
 
