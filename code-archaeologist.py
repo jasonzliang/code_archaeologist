@@ -17,7 +17,9 @@ import re
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import io
+import sys
 import traceback
+import yaml
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -111,6 +113,18 @@ Provide a JSON response with the following structure:
     ]
 }
 ```"""
+
+CODE_GEN_PROMPT = """# Here is some python code and a request to modify the python code:
+
+## Python code
+{python_code}
+
+## Request
+{request}
+
+# Your task
+Complete the request to the best of your ability and output the modified python code.
+"""
 
 def parse_json(rsp):
     pattern = r"```json(.*)```"
@@ -232,12 +246,12 @@ class CodeAnalyzer:
                                         collaboration_graph[author1][author2]['weight'] += 1
 
                 except Exception as e:
-                    print(f"Error analyzing commit {commit.hash}: {str(e)}")
+                    st.error(f"Error analyzing commit {commit.hash}: {str(e)}")
                     traceback.print_exc()
                     continue
 
         except Exception as e:
-            print(f"Error analyzing repository: {str(e)}")
+            st.error(f"Error analyzing repository: {str(e)}")
             traceback.print_exc()
 
         return commits_data, collaboration_graph
@@ -547,6 +561,57 @@ def get_commit_info(repo_path, commit_limit):
     analyzer = CodeAnalyzer(repo_path, commit_limit)
     commits_data, collaboration_graph = analyzer.analyze_repository()
     return commits_data, collaboration_graph
+
+def code_generation(request, code_file):
+    try:
+        cfg_file = 'metagpt.yaml'; assert os.path.exists(cfg_file)
+        with open(cfg_file, 'r') as f: cfg = yaml.safe_load(f)
+        assert 'metagpt_path' in cfg and 'team_file' in cfg
+        metagpt_path = os.path.abspath(os.path.expanduser(cfg['metagpt_path']))
+        team_file = os.path.abspath(os.path.expanduser(cfg['team_file']))
+
+        sys.path.insert(0, metagpt_path)
+        with open(team_file, 'r') as f: team_role = json.load(f)
+
+        from util import extract_code_from_chat
+        from autogen_team import init_builder, start_task
+        from autogen_team import BUILDER_LLM_CONFIG, CHAT_LLM_CONFIG
+
+        agent_list, _, builder, _, executor = init_builder(
+            building_task=None,
+            use_builder_dict=True,
+            builder_dict=team_role,
+            builder_llm_config=BUILDER_LLM_CONFIG,
+            clear_cache=True,
+            debug_mode=False)
+
+        assert os.path.exists(code_file)
+        with open(code_file, 'r') as f: python_code = f.read()
+        prompt = CODE_GEN_PROMPT.format(python_code=python_code,
+            request=request)
+
+        chat_result, groupchat_messages = start_task(
+                execution_task=prompt,
+                agent_list=agent_list,
+                chat_llm_config=CHAT_LLM_CONFIG,
+                builder=builder,
+                builder_llm_config=BUILDER_LLM_CONFIG,
+                code_library=None,
+                imports=None,
+                log_file=None,
+                use_captain_agent=False)
+        output = extract_code_from_chat(chat_result)
+        return output
+
+    except Exception as e:
+        st.error(f"An error occurred while trying code generation: {str(e)}")
+        st.write("Please check that the request, code file, and metagpt.yaml are correct.")
+        traceback.print_exc()
+
+def _test_code_gen():
+    request = "Modify all print statements to use logging.info instead"
+    code_file = os.path.expanduser("~/Desktop/AgentCoder/src/programmer_humaneval.py")
+    print(code_generation(request, code_file))
 
 def main():
     st.title("🏺 Advanced Code Archaeologist")
@@ -1220,4 +1285,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    _test_code_gen()
+    # main()
