@@ -575,7 +575,7 @@ def process_question(question: str, df: pd.DataFrame, collaboration_graph: nx.Gr
         traceback.print_exc()
         return "I couldn't process that question properly. Please try rephrasing it.", {}, None
 
-@st.cache_data
+@st.cache_data(persist=True)
 def get_commit_info(repo_path, commit_limit):
     analyzer = CodeAnalyzer(repo_path, commit_limit)
     commits_data, collaboration_graph = analyzer.analyze_repository()
@@ -586,7 +586,7 @@ def get_abs_path(path, check=True):
     if check: assert os.path.exists(abs_path)
     return abs_path
 
-@st.cache_data
+@st.cache_data(persist=True)
 def code_generation(request, code_file):
     try:
         cfg_file = get_abs_path('code_generation.yaml')
@@ -662,8 +662,8 @@ def get_python_files(repo_path):
         return []
 
 def main():
-    st.title("🏺 Advanced Code Archaeologist")
-    st.write("Deep dive into your repository's evolution with LLM powered analytics")
+    st.title("🏺Code Archaeologist🏺")
+    st.write(f"**Deep dive into your Git repository's evolution with LLM powered analytics!**")
     
     repo_path = st.text_input("Enter repository path (local or remote)")
 
