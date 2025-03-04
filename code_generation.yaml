@@ -1,0 +1,5 @@
+metagpt_path: ~/Desktop/MetaGPT/experiments
+team_file: multiagent_team.json
+max_round: 5
+agent_model: gpt-4o-mini
+builder_model: gpt-4o

@@ -132,7 +132,7 @@ def parse_json(rsp):
     code_text = match.group(1) if match else rsp
     return code_text
 
-class CodeAnalyzer:
+class CodeAnalyzer(object):
     def __init__(self, repo_path: str, commit_limit: int = 0):
         self.repo_path = repo_path
         self.commit_limit = commit_limit
@@ -155,6 +155,7 @@ class CodeAnalyzer:
             # Remove merge commits (more than 1 parent)
             all_commits = list(repo.traverse_commits())
             all_commits = [commit for commit in all_commits if len(commit.parents) <= 1]
+
             # If commit limit is set, get only the most recent commits
             if self.commit_limit > 0:
                 # Convert generator to list and slice
@@ -162,9 +163,24 @@ class CodeAnalyzer:
             else:
                 commits_to_analyze = all_commits
 
+            # Create a progress display
+            total_commits = len(commits_to_analyze)
+
+            # Display the total number of commits to analyze
+            st.write(f"**Total commits to analyze:** {total_commits}")
+
+            # Create a progress bar
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
             # Analyze each commit in the repository
-            for commit in commits_to_analyze:
+            for i, commit in enumerate(commits_to_analyze):
                 try:
+                    # Update progress bar and text with each iteration
+                    progress_value = (i + 1) / total_commits
+                    progress_bar.progress(progress_value)
+                    status_text.write(f"**Processing commit {i+1} of {total_commits}:** {commit.hash[:8]}")
+
                     # Extract author information
                     author = commit.author.name if commit.author.name else commit.author.email
 
@@ -214,7 +230,7 @@ class CodeAnalyzer:
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": content}
                         ],
-                        temperature=0.3
+                        temperature=0.01
                     )
                     json_str = parse_json(response.choices[0].message.content)
                     analysis = json.loads(json_str)
@@ -250,13 +266,16 @@ class CodeAnalyzer:
                     traceback.print_exc()
                     continue
 
+            # Update status when complete
+            status_text.write(f"✅ **Repository analysis complete:** {total_commits} commits processed")
+
         except Exception as e:
             st.error(f"Error analyzing repository: {str(e)}")
             traceback.print_exc()
 
         return commits_data, collaboration_graph
 
-        
+
     def calculate_file_complexity(self, file_content: str) -> float:
         """Calculate code complexity using various metrics"""
         # Basic complexity metrics
@@ -562,20 +581,33 @@ def get_commit_info(repo_path, commit_limit):
     commits_data, collaboration_graph = analyzer.analyze_repository()
     return commits_data, collaboration_graph
 
+def get_abs_path(path, check=True):
+    abs_path = os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
+    if check: assert os.path.exists(abs_path)
+    return abs_path
+
+@st.cache_data
 def code_generation(request, code_file):
     try:
-        cfg_file = 'metagpt.yaml'; assert os.path.exists(cfg_file)
+        cfg_file = get_abs_path('code_generation.yaml')
         with open(cfg_file, 'r') as f: cfg = yaml.safe_load(f)
         assert 'metagpt_path' in cfg and 'team_file' in cfg
-        metagpt_path = os.path.abspath(os.path.expanduser(cfg['metagpt_path']))
-        team_file = os.path.abspath(os.path.expanduser(cfg['team_file']))
-
-        sys.path.insert(0, metagpt_path)
+        metagpt_path = get_abs_path(cfg['metagpt_path'])
+        team_file = get_abs_path(cfg['team_file'])
         with open(team_file, 'r') as f: team_role = json.load(f)
 
+        sys.path.insert(0, metagpt_path)
         from util import extract_code_from_chat
         from autogen_team import init_builder, start_task
         from autogen_team import BUILDER_LLM_CONFIG, CHAT_LLM_CONFIG
+
+        if 'agent_model' in cfg:
+            BUILDER_LLM_CONFIG['agent_model'] = cfg['agent_model']
+            CHAT_LLM_CONFIG['model'] = cfg['agent_model']
+        if 'builder_model' in cfg:
+            BUILDER_LLM_CONFIG['builder_model'] = cfg['builder_model']
+        if 'max_round' in cfg:
+            BUILDER_LLM_CONFIG['max_round'] = int(cfg['max_round'])
 
         agent_list, _, builder, _, executor = init_builder(
             building_task=None,
@@ -585,7 +617,7 @@ def code_generation(request, code_file):
             clear_cache=True,
             debug_mode=False)
 
-        assert os.path.exists(code_file)
+        code_file = get_abs_path(code_file)
         with open(code_file, 'r') as f: python_code = f.read()
         prompt = CODE_GEN_PROMPT.format(python_code=python_code,
             request=request)
@@ -608,14 +640,30 @@ def code_generation(request, code_file):
         st.write("Please check that the request, code file, and metagpt.yaml are correct.")
         traceback.print_exc()
 
-def _test_code_gen():
-    request = "Modify all print statements to use logging.info instead"
-    code_file = os.path.expanduser("~/Desktop/AgentCoder/src/programmer_humaneval.py")
-    print(code_generation(request, code_file))
+def get_python_files(repo_path):
+    """Get a list of Python files in the repository"""
+    python_files = []
+    try:
+        for root, dirs, files in os.walk(repo_path):
+            # Skip .git directory
+            if '.git' in dirs:
+                dirs.remove('.git')
+            # Add Python files to the list
+            for file in files:
+                if file.endswith('.py'):
+                    file_path = os.path.join(root, file)
+                    # Make path relative to repo_path
+                    rel_path = os.path.relpath(file_path, repo_path)
+                    python_files.append(rel_path)
+        return sorted(python_files)
+    except Exception as e:
+        st.error(f"Error finding Python files: {str(e)}")
+        traceback.print_exc()
+        return []
 
 def main():
     st.title("🏺 Advanced Code Archaeologist")
-    st.write("Deep dive into your repository's evolution with LLM (%s) powered analytics" % MODEL)
+    st.write("Deep dive into your repository's evolution with LLM powered analytics")
     
     repo_path = st.text_input("Enter repository path (local or remote)")
 
@@ -633,6 +681,12 @@ def main():
             st.rerun()
 
     if repo_path:
+        try:
+            repo_path = get_abs_path(repo_path)
+        except:
+            st.error(f"Invalid repository path: {repo_path}")
+            return
+
         try:
             with st.spinner("Analyzing repository..."):
                 commits_data, collaboration_graph = get_commit_info(repo_path, commit_limit)
@@ -656,7 +710,8 @@ def main():
                     "Code Insights",
                     "Team Analysis",
                     "Interactive Q&A",
-                    "Custom Analysis"
+                    # "Custom Analysis",
+                    "Code Improvement"
                 ])
 
                 with tabs[0]:
@@ -1019,271 +1074,344 @@ def main():
                                 st.error(f"Error processing question: {str(e)}")
                                 traceback.print_exc()
 
+                # Disabled because not very useful
+                # with tabs[4]:
+                #     st.subheader("Custom Analysis")
+
+                #     try:
+                #         # Create two columns for controls and output
+                #         control_col, viz_col = st.columns([1, 2])
+
+                #         with control_col:
+                #             st.subheader("Visualization Controls")
+
+                #             # Select visualization type
+                #             viz_type = st.selectbox(
+                #                 "Select Visualization Type",
+                #                 [
+                #                     "Time Series",
+                #                     "Bar Chart",
+                #                     "Scatter Plot",
+                #                     "Heatmap",
+                #                     "Pie Chart",
+                #                     "Box Plot",
+                #                     "Violin Plot",
+                #                     "Bubble Chart"
+                #                 ]
+                #             )
+
+                #             # Select data columns based on visualization type
+                #             if viz_type in ["Time Series", "Scatter Plot", "Bubble Chart"]:
+                #                 x_col = st.selectbox(
+                #                     "X-Axis Data",
+                #                     df.select_dtypes(include=['datetime64', 'number']).columns
+                #                 )
+                #             else:
+                #                 x_col = st.selectbox(
+                #                     "X-Axis Data",
+                #                     df.columns
+                #                 )
+
+                #             if viz_type != "Pie Chart":
+                #                 y_col = st.selectbox(
+                #                     "Y-Axis Data",
+                #                     df.select_dtypes(include=['number']).columns
+                #                 )
+
+                #             # Optional parameters based on chart type
+                #             color_col = st.selectbox(
+                #                 "Color By (Optional)",
+                #                 ["None"] + list(df.columns)
+                #             )
+
+                #             if viz_type == "Bubble Chart":
+                #                 size_col = st.selectbox(
+                #                     "Size By",
+                #                     df.select_dtypes(include=['number']).columns
+                #                 )
+
+                #             # Data filtering options
+                #             st.subheader("Data Filters")
+
+                #             # Date range filter
+                #             if 'date' in df.columns:
+                #                 date_range = st.date_input(
+                #                     "Date Range",
+                #                     value=(
+                #                         df['date'].min().date(),
+                #                         df['date'].max().date()
+                #                     ),
+                #                     key="date_filter"
+                #                 )
+
+                #             # Author filter
+                #             if 'author' in df.columns:
+                #                 selected_authors = st.multiselect(
+                #                     "Filter by Authors",
+                #                     options=list(df['author'].unique()),
+                #                     default=[]
+                #                 )
+
+                #             # Impact level filter
+                #             if 'impact_level' in df.columns:
+                #                 impact_range = st.slider(
+                #                     "Impact Level Range",
+                #                     min_value=int(df['impact_level'].min()),
+                #                     max_value=int(df['impact_level'].max()),
+                #                     value=(
+                #                         int(df['impact_level'].min()),
+                #                         int(df['impact_level'].max())
+                #                     )
+                #                 )
+
+                #             # Aggregation options
+                #             st.subheader("Aggregation")
+                #             agg_func = st.selectbox(
+                #                 "Aggregation Function",
+                #                 ["None", "Count", "Sum", "Average", "Max", "Min"]
+                #             )
+
+                #             if agg_func != "None":
+                #                 group_by = st.multiselect(
+                #                     "Group By",
+                #                     options=[col for col in df.columns if col != y_col],
+                #                     default=[]
+                #                 )
+
+                #         with viz_col:
+                #             st.subheader("Custom Visualization")
+
+                #             # Apply filters
+                #             filtered_df = df.copy()
+
+                #             if 'date' in df.columns:
+                #                 # Ensure date column is datetime type
+                #                 try:
+                #                     if not pd.api.types.is_datetime64_any_dtype(filtered_df['date']):
+                #                         filtered_df['date'] = pd.to_datetime(filtered_df['date'], utc=True)
+
+                #                     if date_range is not None:
+                #                         # Convert date range to UTC timezone-aware datetime
+                #                         date_start = pd.to_datetime(date_range[0]).tz_localize('UTC')
+                #                         date_end = pd.to_datetime(date_range[1]).tz_localize('UTC')
+
+                #                         filtered_df = filtered_df[
+                #                             (filtered_df['date'] >= date_start) &
+                #                             (filtered_df['date'] <= date_end)
+                #                         ]
+                #                 except Exception as e:
+                #                     st.error(f"Error processing date filter: {str(e)}")
+                #                     st.write("Please ensure the date column contains valid datetime values.")
+                #                     traceback.print_exc()
+
+                #             if selected_authors:
+                #                 filtered_df = filtered_df[filtered_df['author'].isin(selected_authors)]
+
+                #             if 'impact_level' in df.columns:
+                #                 filtered_df = filtered_df[
+                #                     (filtered_df['impact_level'] >= impact_range[0]) &
+                #                     (filtered_df['impact_level'] <= impact_range[1])
+                #                 ]
+
+                #             # Apply aggregation if selected
+                #             if agg_func != "None" and group_by:
+                #                 agg_map = {
+                #                     "Count": "count",
+                #                     "Sum": "sum",
+                #                     "Average": "mean",
+                #                     "Max": "max",
+                #                     "Min": "min"
+                #                 }
+                #                 filtered_df = filtered_df.groupby(group_by)[y_col].agg(
+                #                     agg_map[agg_func]
+                #                 ).reset_index()
+
+                #             # Create visualization based on selection
+                #             try:
+                #                 if viz_type == "Time Series":
+                #                     fig = px.line(
+                #                         filtered_df,
+                #                         x=x_col,
+                #                         y=y_col,
+                #                         color=None if color_col == "None" else color_col,
+                #                         title=f"{y_col} over {x_col}"
+                #                     )
+
+                #                 elif viz_type == "Bar Chart":
+                #                     fig = px.bar(
+                #                         filtered_df,
+                #                         x=x_col,
+                #                         y=y_col,
+                #                         color=None if color_col == "None" else color_col,
+                #                         title=f"{y_col} by {x_col}"
+                #                     )
+
+                #                 elif viz_type == "Scatter Plot":
+                #                     fig = px.scatter(
+                #                         filtered_df,
+                #                         x=x_col,
+                #                         y=y_col,
+                #                         color=None if color_col == "None" else color_col,
+                #                         title=f"{y_col} vs {x_col}"
+                #                     )
+
+                #                 elif viz_type == "Heatmap":
+                #                     pivot_data = filtered_df.pivot_table(
+                #                         values=y_col,
+                #                         index=x_col,
+                #                         columns=color_col if color_col != "None" else None,
+                #                         aggfunc='count'
+                #                     )
+                #                     fig = px.imshow(
+                #                         pivot_data,
+                #                         title=f"Heatmap of {y_col}"
+                #                     )
+
+                #                 elif viz_type == "Pie Chart":
+                #                     fig = px.pie(
+                #                         filtered_df,
+                #                         values=y_col,
+                #                         names=x_col,
+                #                         title=f"Distribution of {x_col}"
+                #                     )
+
+                #                 elif viz_type == "Box Plot":
+                #                     fig = px.box(
+                #                         filtered_df,
+                #                         x=x_col,
+                #                         y=y_col,
+                #                         color=None if color_col == "None" else color_col,
+                #                         title=f"Distribution of {y_col} by {x_col}"
+                #                     )
+
+                #                 elif viz_type == "Violin Plot":
+                #                     fig = px.violin(
+                #                         filtered_df,
+                #                         x=x_col,
+                #                         y=y_col,
+                #                         color=None if color_col == "None" else color_col,
+                #                         title=f"Distribution of {y_col} by {x_col}"
+                #                     )
+
+                #                 elif viz_type == "Bubble Chart":
+                #                     fig = px.scatter(
+                #                         filtered_df,
+                #                         x=x_col,
+                #                         y=y_col,
+                #                         size=size_col,
+                #                         color=None if color_col == "None" else color_col,
+                #                         title=f"{y_col} vs {x_col} (size: {size_col})"
+                #                     )
+
+                #                 # Update layout for all charts
+                #                 fig.update_layout(
+                #                     height=600,
+                #                     template="plotly_white"
+                #                 )
+
+                #                 # Display the figure
+                #                 st.plotly_chart(fig, use_container_width=True)
+
+                #                 # Display data table
+                #                 with st.expander("View Data"):
+                #                     st.dataframe(filtered_df)
+
+                #                 # Add export options
+                #                 if st.button("Export Data"):
+                #                     csv = filtered_df.to_csv(index=False)
+                #                     st.download_button(
+                #                         label="Download CSV",
+                #                         data=csv,
+                #                         file_name="custom_analysis.csv",
+                #                         mime="text/csv"
+                #                     )
+
+                #             except Exception as e:
+                #                 st.error(f"Error creating visualization: {str(e)}")
+                #                 st.write("Please try different parameters or data columns.")
+                #                 traceback.print_exc()
+                #     except Exception as e:
+                #         st.error(f"Error in Custom Analysis tab: {str(e)}")
+                #         traceback.print_exc()
+
                 with tabs[4]:
-                    st.subheader("Custom Analysis")
+                    st.subheader("Code Generation & Improvement")
+                    st.write("Select a Python file and specify how you'd like to improve or modify it.")
 
-                    try:
-                        # Create two columns for controls and output
-                        control_col, viz_col = st.columns([1, 2])
+                    # Get list of Python files in the repository
+                    python_files = get_python_files(repo_path)
 
-                        with control_col:
-                            st.subheader("Visualization Controls")
+                    if not python_files:
+                        st.warning("No Python files found in this repository.")
+                    else:
+                        selected_file = st.selectbox(
+                            "Select Python file to improve",
+                            options=python_files
+                        )
 
-                            # Select visualization type
-                            viz_type = st.selectbox(
-                                "Select Visualization Type",
-                                [
-                                    "Time Series",
-                                    "Bar Chart",
-                                    "Scatter Plot",
-                                    "Heatmap",
-                                    "Pie Chart",
-                                    "Box Plot",
-                                    "Violin Plot",
-                                    "Bubble Chart"
-                                ]
-                            )
+                        if selected_file:
+                            # Create full path to file
+                            full_path = os.path.join(repo_path, selected_file)
 
-                            # Select data columns based on visualization type
-                            if viz_type in ["Time Series", "Scatter Plot", "Bubble Chart"]:
-                                x_col = st.selectbox(
-                                    "X-Axis Data",
-                                    df.select_dtypes(include=['datetime64', 'number']).columns
-                                )
-                            else:
-                                x_col = st.selectbox(
-                                    "X-Axis Data",
-                                    df.columns
-                                )
-
-                            if viz_type != "Pie Chart":
-                                y_col = st.selectbox(
-                                    "Y-Axis Data",
-                                    df.select_dtypes(include=['number']).columns
-                                )
-
-                            # Optional parameters based on chart type
-                            color_col = st.selectbox(
-                                "Color By (Optional)",
-                                ["None"] + list(df.columns)
-                            )
-
-                            if viz_type == "Bubble Chart":
-                                size_col = st.selectbox(
-                                    "Size By",
-                                    df.select_dtypes(include=['number']).columns
-                                )
-
-                            # Data filtering options
-                            st.subheader("Data Filters")
-
-                            # Date range filter
-                            if 'date' in df.columns:
-                                date_range = st.date_input(
-                                    "Date Range",
-                                    value=(
-                                        df['date'].min().date(),
-                                        df['date'].max().date()
-                                    ),
-                                    key="date_filter"
-                                )
-
-                            # Author filter
-                            if 'author' in df.columns:
-                                selected_authors = st.multiselect(
-                                    "Filter by Authors",
-                                    options=list(df['author'].unique()),
-                                    default=[]
-                                )
-
-                            # Impact level filter
-                            if 'impact_level' in df.columns:
-                                impact_range = st.slider(
-                                    "Impact Level Range",
-                                    min_value=int(df['impact_level'].min()),
-                                    max_value=int(df['impact_level'].max()),
-                                    value=(
-                                        int(df['impact_level'].min()),
-                                        int(df['impact_level'].max())
-                                    )
-                                )
-
-                            # Aggregation options
-                            st.subheader("Aggregation")
-                            agg_func = st.selectbox(
-                                "Aggregation Function",
-                                ["None", "Count", "Sum", "Average", "Max", "Min"]
-                            )
-
-                            if agg_func != "None":
-                                group_by = st.multiselect(
-                                    "Group By",
-                                    options=[col for col in df.columns if col != y_col],
-                                    default=[]
-                                )
-
-                        with viz_col:
-                            st.subheader("Custom Visualization")
-
-                            # Apply filters
-                            filtered_df = df.copy()
-
-                            if 'date' in df.columns:
-                                # Ensure date column is datetime type
-                                try:
-                                    if not pd.api.types.is_datetime64_any_dtype(filtered_df['date']):
-                                        filtered_df['date'] = pd.to_datetime(filtered_df['date'], utc=True)
-
-                                    if date_range is not None:
-                                        # Convert date range to UTC timezone-aware datetime
-                                        date_start = pd.to_datetime(date_range[0]).tz_localize('UTC')
-                                        date_end = pd.to_datetime(date_range[1]).tz_localize('UTC')
-
-                                        filtered_df = filtered_df[
-                                            (filtered_df['date'] >= date_start) &
-                                            (filtered_df['date'] <= date_end)
-                                        ]
-                                except Exception as e:
-                                    st.error(f"Error processing date filter: {str(e)}")
-                                    st.write("Please ensure the date column contains valid datetime values.")
-                                    traceback.print_exc()
-
-                            if selected_authors:
-                                filtered_df = filtered_df[filtered_df['author'].isin(selected_authors)]
-
-                            if 'impact_level' in df.columns:
-                                filtered_df = filtered_df[
-                                    (filtered_df['impact_level'] >= impact_range[0]) &
-                                    (filtered_df['impact_level'] <= impact_range[1])
-                                ]
-
-                            # Apply aggregation if selected
-                            if agg_func != "None" and group_by:
-                                agg_map = {
-                                    "Count": "count",
-                                    "Sum": "sum",
-                                    "Average": "mean",
-                                    "Max": "max",
-                                    "Min": "min"
-                                }
-                                filtered_df = filtered_df.groupby(group_by)[y_col].agg(
-                                    agg_map[agg_func]
-                                ).reset_index()
-
-                            # Create visualization based on selection
+                            # Show file preview
                             try:
-                                if viz_type == "Time Series":
-                                    fig = px.line(
-                                        filtered_df,
-                                        x=x_col,
-                                        y=y_col,
-                                        color=None if color_col == "None" else color_col,
-                                        title=f"{y_col} over {x_col}"
-                                    )
-
-                                elif viz_type == "Bar Chart":
-                                    fig = px.bar(
-                                        filtered_df,
-                                        x=x_col,
-                                        y=y_col,
-                                        color=None if color_col == "None" else color_col,
-                                        title=f"{y_col} by {x_col}"
-                                    )
-
-                                elif viz_type == "Scatter Plot":
-                                    fig = px.scatter(
-                                        filtered_df,
-                                        x=x_col,
-                                        y=y_col,
-                                        color=None if color_col == "None" else color_col,
-                                        title=f"{y_col} vs {x_col}"
-                                    )
-
-                                elif viz_type == "Heatmap":
-                                    pivot_data = filtered_df.pivot_table(
-                                        values=y_col,
-                                        index=x_col,
-                                        columns=color_col if color_col != "None" else None,
-                                        aggfunc='count'
-                                    )
-                                    fig = px.imshow(
-                                        pivot_data,
-                                        title=f"Heatmap of {y_col}"
-                                    )
-
-                                elif viz_type == "Pie Chart":
-                                    fig = px.pie(
-                                        filtered_df,
-                                        values=y_col,
-                                        names=x_col,
-                                        title=f"Distribution of {x_col}"
-                                    )
-
-                                elif viz_type == "Box Plot":
-                                    fig = px.box(
-                                        filtered_df,
-                                        x=x_col,
-                                        y=y_col,
-                                        color=None if color_col == "None" else color_col,
-                                        title=f"Distribution of {y_col} by {x_col}"
-                                    )
-
-                                elif viz_type == "Violin Plot":
-                                    fig = px.violin(
-                                        filtered_df,
-                                        x=x_col,
-                                        y=y_col,
-                                        color=None if color_col == "None" else color_col,
-                                        title=f"Distribution of {y_col} by {x_col}"
-                                    )
-
-                                elif viz_type == "Bubble Chart":
-                                    fig = px.scatter(
-                                        filtered_df,
-                                        x=x_col,
-                                        y=y_col,
-                                        size=size_col,
-                                        color=None if color_col == "None" else color_col,
-                                        title=f"{y_col} vs {x_col} (size: {size_col})"
-                                    )
-
-                                # Update layout for all charts
-                                fig.update_layout(
-                                    height=600,
-                                    template="plotly_white"
-                                )
-
-                                # Display the figure
-                                st.plotly_chart(fig, use_container_width=True)
-
-                                # Display data table
-                                with st.expander("View Data"):
-                                    st.dataframe(filtered_df)
-
-                                # Add export options
-                                if st.button("Export Data"):
-                                    csv = filtered_df.to_csv(index=False)
-                                    st.download_button(
-                                        label="Download CSV",
-                                        data=csv,
-                                        file_name="custom_analysis.csv",
-                                        mime="text/csv"
-                                    )
-
+                                with open(full_path, 'r') as f:
+                                    file_content = f.read()
+                                with st.expander("Preview file content"):
+                                    st.code(file_content, language="python")
                             except Exception as e:
-                                st.error(f"Error creating visualization: {str(e)}")
-                                st.write("Please try different parameters or data columns.")
-                                traceback.print_exc()
-                    except Exception as e:
-                        st.error(f"Error in Custom Analysis tab: {str(e)}")
-                        traceback.print_exc()
+                                st.error(f"Error reading file: {str(e)}")
+
+                            # Request for code improvement
+                            improvement_request = st.text_area(
+                                "What changes or improvements would you like to make?",
+                                placeholder="For example: Add docstrings, optimize performance, add type hints, etc."
+                            )
+
+                            if st.button("Generate Improved Code"):
+                                if improvement_request:
+                                    with st.spinner("Generating improved code..."):
+                                        try:
+                                            improved_code = code_generation(improvement_request, full_path)
+
+                                            if improved_code:
+                                                st.success("Code successfully improved!")
+                                                st.subheader("Improved Code")
+                                                st.code(improved_code, language="python")
+
+                                                # Option to download the improved code
+                                                st.download_button(
+                                                    label="Download Improved Code",
+                                                    data=improved_code,
+                                                    file_name=selected_file,
+                                                    mime="text/plain"
+                                                )
+
+                                                # Option to save changes directly to file
+                                                if st.button("Save Changes to File"):
+                                                    try:
+                                                        with open(full_path, 'w') as f:
+                                                            f.write(improved_code)
+                                                        st.success(f"Changes saved to {selected_file}")
+                                                    except Exception as e:
+                                                        st.error(f"Error saving changes: {str(e)}")
+                                            else:
+                                                st.error("Could not generate improved code. Check the logs for details.")
+                                        except Exception as e:
+                                            st.error(f"Error in code generation: {str(e)}")
+                                            traceback.print_exc()
+                                else:
+                                    st.warning("Please specify what improvements or changes you'd like to make.")
 
         except Exception as e:
             st.error(f"An error occurred while analyzing the repository: {str(e)}")
             st.write("Please check the repository path and ensure you have the necessary permissions.")
             traceback.print_exc()
 
+def test_code_gen():
+    request = "Modify all print statements to use logging.info instead"
+    code_file = "test_file.py"
+    print(code_generation(request, code_file))
 
 if __name__ == "__main__":
-    _test_code_gen()
-    # main()
+    main()
