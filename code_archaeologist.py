@@ -1,25 +1,30 @@
-import os
-from datetime import datetime, timedelta
-from collections import defaultdict, Counter
-import numpy as np
-import pandas as pd
-from pydriller import Repository, ModifiedFile
-from openai import OpenAI
-import streamlit as st
-import plotly.graph_objects as go
-import plotly.express as px
-import networkx as nx
-from plotly.subplots import make_subplots
-import json
-from typing import Dict, List, Any, Tuple
+# Standard library imports
+import asyncio
 import calendar
-import re
-from wordcloud import WordCloud
-import matplotlib.pyplot as plt
 import io
+import json
+import os
+import re
 import sys
 import traceback
+from collections import defaultdict, Counter
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Tuple
+
+# Third-party library imports
+import matplotlib.pyplot as plt
+import nest_asyncio
+import networkx as nx
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
 import yaml
+from openai import OpenAI
+from plotly.subplots import make_subplots
+from pydriller import Repository, ModifiedFile
+from wordcloud import WordCloud
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
