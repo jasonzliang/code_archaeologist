@@ -612,7 +612,7 @@ def code_generation(request, code_file):
         if 'builder_model' in cfg:
             BUILDER_LLM_CONFIG['builder_model'] = cfg['builder_model']
         if 'max_round' in cfg:
-            BUILDER_LLM_CONFIG['max_round'] = int(cfg['max_round'])
+            CHAT_LLM_CONFIG['max_round'] = int(cfg['max_round'])
 
         agent_list, _, builder, _, executor = init_builder(
             building_task=None,
