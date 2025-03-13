@@ -60,9 +60,11 @@ pip install -r requirements.txt
 export OPENAI_API_KEY='your-api-key'
 ```
 
-4. Create a "code_generation.yaml" file with provided template. Install AutoGen (github.com/jasonzliang/ag2) and MetaGPT (github.com/jasonzliang/MetaGPT). Make sure to update agent_model, builder_model, and metagpt_path to reflect your local configuration.
+The following installation steps are optional and enable code generation using LLMs:
 
-5. Create an AutoGen config file located at ~/.autogen/OAI_CONFIG_LIST (see microsoft.github.io/autogen/0.2/docs/topics/llm_configuration for details).
+4. Create a "code_generation.yaml" file with provided template. Install [AutoGen](https://github.com/jasonzliang/ag2) and [MetaGPT](https://github.com/jasonzliang/MetaGPT). Make sure to update agent_model, builder_model, and metagpt_path to reflect your local configuration.
+
+5. Create an AutoGen config file located at ~/.autogen/OAI_CONFIG_LIST (see [AutoGen documentation](https://microsoft.github.io/autogen/0.2/docs/topics/llm_configuration) for details).
 
 ## Dependencies
 
