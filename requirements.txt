@@ -1,0 +1,13 @@
+numpy
+pandas
+pydriller
+openai
+streamlit
+plotly
+networkx
+wordcloud
+matplotlib
+python-dateutil
+watchdog
+nest-asyncio
+pyyaml

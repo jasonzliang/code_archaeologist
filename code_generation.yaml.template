@@ -1,0 +1,5 @@
+metagpt_path: ~/Desktop/MetaGPT/experiments
+team_file: multiagent_team.json
+max_round: 5
+agent_model: nvidia/llama-3.1-nemotron-70b-instruct
+builder_model: nvidia/llama-3.1-nemotron-70b-instruct
